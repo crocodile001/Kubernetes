@@ -1,0 +1,972 @@
+
+	### 核心組件
+	
+	etcd ( master ) : 保存整個集群的狀態
+	apiserver ( master ) : 提供資源操作的唯一入口，包括認證、授權、訪問控制和 API 註冊等
+	controller manager ( master ) : 負責維護集群的狀態，如故障檢測、自動擴展、滾動更新等
+	scheduler ( master ) : 負責資源的調度
+	kubelet : 負責維護容器的生命週期，同時也負責 Volume ( CVI ) 和網路 ( CNI ) 的管理
+	container runtime : 負責鏡像管理以及 Pod 和容器的真正運行 ( CRI )
+	kube-proxy : 負責為 service 提供 cluster 內部的服務和負載均衡
+	
+	
+	### 環境
+	
+		OS : CentOS Linux release 7.4.1708 (Core)
+	
+		k8s-master : master、node 	(172.16.98.27)
+		k8s-node1 : node			(172.16.98.18)
+		k8s-node2 : node			(172.16.98.104)
+		
+		1. 初始化 :
+		
+			ip addr ( = ifconfig )
+			vi /etc/sysconfig/network-scripts/ifcfg-ens33
+				將 ONBOOT no 改成 ONBOOT yes
+			systemctl restart network
+			( ping 8.8.8.8 )
+			
+			systemctl stop firewalld
+			systemctl disable firewalld
+			setenforce 0
+			( getenforce )
+			vi /etc/selinux/config
+				將 SELINUX=enforcing 改成 SELINUX=disabled
+			
+			vi /etc/ssh/sshd_config
+				將 #PasswordAuthentication no 開啟並改成 yes
+				將 PermitRootLogin prohibit-password 改成 PermitRootLogin yes
+			systemctl restart sshd
+			systemctl stop NetworkManager.service
+			systemctl disable NetworkManager.service
+			
+			yum install -y net-tools vim lrzsz wget tree screen lsof tcpdump bash-completion.noarch
+			wget -O /etc/yum.repos.d/CentOS-Base.repo http://mirrors.aliyun.com/repo/Centos-7.repo
+			
+			systemctl stop postfix.service
+			systemctl disable postfix.service
+			( netstat -lntup )
+			reboot ( shutdown -h now )
+			
+			vi /etc/hosts
+				xxx.xxx.xxx.xxx k8s-master
+				xxx.xxx.xxx.xxx k8s-node1
+				xxx.xxx.xxx.xxx k8s-node2
+			scp -rp /etc/hosts xxx.xxx.xxx.xxx:/etc/hosts
+			scp -rp /etc/hosts xxx.xxx.xxx.xxx:/etc/hosts
+			
+			
+		2. master 安裝 etcd :
+		
+			yum install -y etcd
+			vim /etc/etcd/etcd.config
+				6行 : ETCD_LISTEN_CLIENT_URLS="http://0.0.0.0:2379"
+				21行 : ETCD_ADVERTISE_CLIENT_URLS="http://<master IP>:2379"
+			systemctl start etcd.service
+			systemctl enable etcd.service
+			
+			/*
+			測試 :
+			
+				etcdctl set testdir/testkey0 0
+				etcdctl get testdir/testkey0
+				etcdctl -C http://<master IP>:2379 cluster-health
+			*/
+			
+		3. 
+		
+		安裝 kubernetes master 節點
+		
+			yum install -y kubernetes-master.x86_64
+			
+			vim /etc/kubernetes/apiserver
+				8 : KUBE_API_ADDRESS="--insecure-bind-address=0.0.0.0"
+				11 : KUBE_API_PORT="--port=8080"
+				14 : KUBELET_PORT="--kubelet-port=10250"
+				17 : KUBE_ETCD_SERVERS="--etcd-servers=http://<master IP>:2379"
+				23 : KUBE_ADMISSION_CONTROL="--admission-control=NamespaceLifecycle, NamespaceExists, LimitRanger, SecurityContextDeny, ResourceQuota"
+			vim /etc/kubernetes/config		( 配置 controller 和 scheduler )
+				22 : KUBE_MASTER="--master=http://<master IP>:8080"
+				
+			systemctl start kube-apiserver.service
+			systemctl start kube-controller-manager.service
+			systemctl start kube-scheduler.service
+			systemctl enable kube-apiserver.service
+			systemctl enable kube-controller-manager.service
+			systemctl enable kube-scheduler.service
+			
+			測試 :
+			
+				kubectl get componentstatus
+				
+		4.
+		
+		安裝 kubernetes node 節點
+		
+			yum install -y kubernetes-node.x86_64
+			
+			master :
+				
+				vim /etc/kubernetes/config
+					22 : KUBE_MASTER="--master=http://<master IP>:8080"
+				vim /etc/kubernetes/kubelet
+					5 : KUBELET_ADDRESS="--address=<master IP>"
+					8 : KUBELET_PORT="--port=10250"
+					11 : KUBELET_HOSTNAME="--hostname-override=k8s-master"
+					14 : KUBELET_API_SERVER="--api-servers=http://<master IP>:8080"
+				
+				systemctl start kubelet.service
+				systemctl start kube-proxy.service
+				systemctl enable kubelet.service
+				systemctl enable kube-proxy.service
+			
+			node1 :
+				
+				vim /etc/kubernetes/config
+					22 : KUBE_MASTER="--master=http://<master IP>:8080"
+				vim /etc/kubernetes/kubelet
+					5 : KUBELET_ADDRESS="--address=<node1 IP>"
+					8 : KUBELET_PORT="--port=10250"
+					11 : KUBELET_HOSTNAME="--hostname-override=k8s-node1"
+					14 : KUBELET_API_SERVER="--api-servers=http://<master IP>:8080"
+				
+				systemctl start kubelet.service
+				systemctl start kube-proxy.service
+				systemctl enable kubelet.service
+				systemctl enable kube-proxy.service
+				
+			node2 :
+				
+				vim /etc/kubernetes/config
+					22 : KUBE_MASTER="--master=http://<master IP>:8080"
+				vim /etc/kubernetes/kubelet
+					5 : KUBELET_ADDRESS="--address=<node2 IP>"
+					8 : KUBELET_PORT="--port=10250"
+					11 : KUBELET_HOSTNAME="--hostname-override=k8s-node2"
+					14 : KUBELET_API_SERVER="--api-servers=http://<master IP>:8080"
+				
+				systemctl start kubelet.service
+				systemctl start kube-proxy.service
+				systemctl enable kubelet.service
+				systemctl enable kube-proxy.service
+			
+			kubectl get nodes
+			
+		5.
+		
+		所有 node 節點安裝 flannel 網路插件 :
+		
+			yum install -y flannel
+			
+			master :
+				vim /etc/sysconfig/flanneld
+					FLANNEL_ETCD_ENDPOINT="http://<master IP>:2379"
+				etcdctl set /atomic.io/network/config '{ "Network": "172.16.0.0/16" }'
+				
+				systemctl start flanneld.service
+				systemctl enable flanneld.service
+				systemctl restart docker
+				
+			node1 :
+				vim /etc/sysconfig/flanneld
+					FLANNEL_ETCD_ENDPOINT="http://<master IP>:2379"
+				
+				systemctl start flanneld.service
+				systemctl enable flanneld.service
+				systemctl restart docker
+				
+			node2 :
+				vim /etc/sysconfig/flanneld
+					FLANNEL_ETCD_ENDPOINT="http://<master IP>:2379"
+				
+				systemctl start flanneld.service
+				systemctl enable flanneld.service
+				systemctl restart docker
+				
+				
+		6.
+		
+		測試容器之間的通訊 :
+		
+			master、node1、node2 :
+			
+				docker pull busybox
+				iptables -L -n
+				iptables -P FORWARD ACCEPT
+				vim /usr/lib/systemd/system/docker.service
+					17 : 加入 ExecStartPost=/usr/sbin/iptables -P FORWARD ACCEPT
+				systemctl daemon-reload
+				
+				docker run -it busybox		( 三台都要 run 才能執行 ping )
+				在 busybox 中 : ping <另兩台 busybox 的 IP>
+				
+		
+		
+		7.
+		
+		建立 Pod
+		
+			master :
+			
+				~# mkdir k8s
+				cd k8s
+				mkdir pod
+				cd pod
+				vim nginx_pod.yaml :
+					apiVersion: v1
+					kind: Pod
+					metadata:
+						name: nginx
+						labels:
+							app: web
+					spec:
+						containers:
+							- name: nginx
+							  image: nginx:1.13
+							  ports:
+								- containerPort: 80
+		
+		
+				vim /etc/kubernetes/apiserver
+					KUBE_ADMISSION_CONTROL 刪除 ServiceAccount
+				systemctl restart kube-apiserver.service
+		
+				kubectl create -f nginx_pod.yaml
+				kubectl get pod nginx -o wide
+				kubectl describe pod nginx
+					結果顯示 nginx 部屬在 node2 ( 隨機 ) 上	( 此時 nginx 還沒有 ready )
+			
+			/* 這個是修改單個 node 的方法，不推薦
+				node2 :
+				
+					vim /etc/kubernetes/kubelet
+						KUBELET_POD_INFRA_CONTAINER="--pod-infra-container-image=docker.io/tianyebj/pod-infrastructure:latest"
+					systemctl restart kubelet.service
+			
+				接著，靜待系統重試 pull image
+			*/
+			
+			
+			master :
+				
+				# 啟動私有倉庫 
+				docker search registry
+				docker pull docker.io/registry
+				
+				( enable Ipv4 forwarding )
+					vim /etc/sysctl.conf
+						加入 net.ipv4.ip_forward = 1
+					sysctl -p
+				
+				docker run -d -p 5000:5000 --restart=always --name registry -v /opt/myregistry:/var/lib/registry registry
+		
+			master、node1、node2 :
+			
+				# 從私有倉庫 pull image
+				vim /etc/sysconfig/docker
+					OPTIONS='--selinux-enabled --log-driver=journald --signature-verification=false --insecure-registry=<master IP>:5000'
+				systemctl restart docker
+				
+				vim /etc/kubernetes/kubelet
+					KUBELET_POD_INFRA_CONTAINER="--pod-infra-container-image=<master IP>:5000/pod-infrastructure:latest"
+				systemctl restart kubelet.service
+				
+			node2 :
+			
+				# 將 image push 到私有倉庫
+				docker images
+				docker tag docker.io/tianyebj/pod-infrastructure:latest <master IP>:5000/pod-infrastructure:latest
+				docker push <master IP>:5000/pod-infrastructure:latest
+				docker pull nginx:1.13
+				docker tag docker.io/nginx:1.13 <master IP>:5000/nginx:1.13
+				docker push <master IP>:5000/nginx:1.13
+				
+			
+			接著，在 master 上靜待系統建立 pod			( 用 kubectl get pod -o wide 查看結果 )
+			
+			
+			master :
+				vim nginx_pod.yaml
+					name: nginx 改成 name: nginx2
+					image: nginx:1.13 改成 image: 172.16.98.27:5000/nginx:1.13
+			
+			補充 : nginx 和 pod-infrastructure 共用 IP，IP 設在 pod-infrastructure 上，nginx 的 IP 類型為 container
+				   k8s 創建一個 pod，kubelet 控制 docker 啟動 pod 容器和 nginx 容器
+				   
+				   pod 常用操作 :
+				   
+						kubectl create -f nginx.yaml
+						kubectl get pods
+						kubectl describe pod <name>
+						kubectl delete pod <name> ( --force --grace-period=0 )
+						kubectl apply -f nginx.yaml
+						kubectl edit pod <name>
+						kubectl create -f . 		( 依照文件創建所有 )
+						kubectl delete -f .			( 依照文件刪除所有 )
+						
+						
+		8.	replication controller ( rc )
+		
+		master :
+			
+			~# mkdir rc
+			cd rc
+			vim nginx-rc.yaml
+				apiVersion: v1
+				kind: ReplicationController
+				metadata:
+					name: myweb
+				spec:
+					replicas: 2
+					selector:
+						app: myweb
+					template:
+						metadata:
+							labels:
+								app: myweb
+						spec:
+							containers:
+							- name: myweb
+							  image: 172.16.98.27:5000/nginx:1.13
+							  ports:
+							  - containerPort: 80
+		
+			kubectl create -f nginx-rc.yaml
+			kubectl get rc
+			
+			補充 : rc 利用 label 辨別負責的 pod ( kubectl edit pod <name> 可以用來更改 label )
+			
+			# 滾動更新
+			docker pull nginx:1.15
+			docker tag docker.io/nginx:1.15 <master IP>:5000/nginx:1.15
+			docker push <master IP>:5000/nginx:1.15
+			
+			cp nginx-rc.yaml nginx-rc2.yaml
+			vim nginx-rc2.yaml
+				myweb 都換成 myweb2
+				image: 172.16.98.27:5000/nginx:1.15
+			kubectl rolling-update myweb -f nginx-rc2.yaml --update-period=10s
+			kubectl rolling-update myweb2 -f nginx-rc.yaml --update-period=1s	( 回滾 = kubectl rolling-update myweb myweb2 --rollback )
+			
+		
+		9. service 資源
+		
+			k8s 的三種 IP 類型 : nodeip、clusterip、podip
+		
+			master :
+			
+				cd ~/k8s
+				mkdir svc
+				cd svc
+				vim nginx-svc.yaml
+					apiVersion: v1
+					kind: Service
+					metadata:
+					  name: myweb
+					spec:
+					  type: NodePort
+					  ports:
+					  - port: 80
+						nodePort: 30000
+						targetPort: 80
+					  selector:
+						app: myweb
+		
+				補 : port ( clusterip )、targetport ( podip )、nodeport ( nodeip )
+				kubectl create -f nginx-svc.yaml
+				kubectl describe svc myweb
+				瀏覽器可以訪問 <master、node1、node2 IP>:30000
+				
+				kubectl scale rc myweb --replicas=3
+				kubectl describe svc myweb
+				
+				負載均衡 :
+				
+					echo 'node1' > index.html
+					kubectl cp index.html <pod name>:/usr/share/nginx/html/index.html
+					echo 'node2' > index.html
+					kubectl cp index.html <pod name>:/usr/share/nginx/html/index.html
+					echo 'node3' > index.html
+					kubectl cp index.html <pod name>:/usr/share/nginx/html/index.html
+					
+		10. deployment	( 解決部分 RC 問題 )
+		
+			master :
+			
+				kubectl delete rc <label>
+				kubectl delete svc <label>
+				cd ~/k8s
+				mkdir deploy
+				cd deploy
+				vim nginx-deploy.yaml
+					apiVersion: extensions/v1beta1
+					kind: Deployment
+					metadata:
+						name: nginx-deployment
+					spec:
+						replicas: 3
+						template:
+							metadata:
+								labels:
+									app: nginx
+							spec:
+								containers:
+								- name: nginx
+								  image: 172.16.98.27:5000/nginx:1.13
+								  ports:
+								  - containerPort: 80
+				kubectl create -f nginx-deploy.yaml	  
+				kubectl expose deployment nginx-deployment --port=80 --type=NodePort	( 映射端口 )
+				kubectl edit deployment nginx-deployment 	( 直接修改要改變的 image )
+				kubectl rollout undo deployment nginx-deployment	( 回滾 )
+				kubectl rollout history deployment nginx-deployment ( 查看歷史版本 )
+				
+				kubectl run nginx --image=<master IP>:5000/nginx:1.13 --replicas=3 --record		( record 參數是為了增加 history 的資訊 )
+				kubectl set image deploy nginx nginx=<master IP>:5000/nginx:1.15				( 為了增加 history 的資訊 )
+				kubectl rollout history deployment nginx
+				kubectl rollout undo deployment nginx --to-revision=1							( 回滾到指定版本 )
+				
+		11. tomcat + mysql
+		
+			cd ~/k8s
+			wget https://www.qstack.com.cn/tomcat_demo.zip
+			unzip tomcat_demo.zip
+			cd tomcat_demo
+			
+			docker pull mysql:5.7
+			docker tag docker.io/mysql:5.7 <master IP>:5000/mysql:5.7
+			docker push <master IP>:5000/mysql:5.7
+			kubectl create -f mysql-rc.yml
+			kubectl create -f mysql-svc.yml
+			
+			docker pull docker.io/kubeguide/tomcat-app:v2
+			docker tag docker.io/kubeguide/tomcat-app:v2 <master IP>:5000/tomcat-app:v2
+			docker push <master IP>:5000/tomcat-app:v2
+			vim tomcat-rc.yml
+				env:
+				  - name: MYSQL_SERVICE_HOST
+					value: '< 改成 mysql cluster IP，如果有 DNS 組件就可以直接使用 'mysql' >'
+			kubectl create -f tomcat-rc.yml
+			kubectl create -f tomcat-svc.yml
+			瀏覽器可以訪問 <master、node1、node2 IP>:30008
+			瀏覽器可以訪問 <master、node1、node2 IP>:30008/demo
+			
+			kubectl exec -it <pod name> bash		( 進入 pod 容器 )
+			kubectl scale rc myweb --replicas=3
+			
+		12. 附加組件 DNS ( 改善環境變量過多 )
+		
+			master :
+				cd ~/k8s
+				wget https://www.qstack.com.cn/skydns.zip
+				unzip skydns.zip
+				cd skydns
+				vim skydns-rc.yaml
+				kubectl create -f skydns-rc.yaml
+				vim skydns-svc.yaml
+				kubectl create -f skydns-svc.yaml
+				kubectl get pod --namespace=kube-system
+				kubectl get all --namespace=kube-system
+			
+			master、node1、node2 :
+			
+				vim /etc/kubernetes/kubelet
+					KUBELET_ARGS="--cluster_dns=10.254.230.254 --cluster_domain=cluster.local"
+				systemctl restart kubelet.service
+				
+			master :
+				kubectl create -f test_dns_pod.yaml
+				
+				kubectl exec -it busybox2 sh
+				nslookup <svc name>
+				
+		13. pod 健康檢查
+		
+			探針種類 :
+			
+				livenessProbe: 健康狀態檢查，週期性檢查服務是否存活，檢查為失敗則重啟容器
+				readinessProbe: 可用性檢查，週期性檢查服務是否可用，檢查為失敗則移除容器
+				
+			檢測方法 :
+			
+				exec: 執行一段命令
+				httpGet: 檢測 http 請求的返回狀態碼
+				tcpSocket: 檢測端口是否能連接
+			
+			livenessProbe:
+			master:
+			
+				cd ~/k8s
+				mkdir health
+				cd health
+				vim pod_nginx_exec.yaml
+					apiVersion: v1
+					kind: Pod
+					metadata:
+					  name: exec
+					spec:
+					  containers:
+					    - name: nginx
+						  image: 172.16.98.27:5000/nginx:1.13
+						  ports:
+						    - containerPort: 80
+						  args:
+						    - /bin/sh
+							- -c
+							- touch /tmp/health; sleep 30; rm -rf /tmp/healthy; sleep 600
+						  livenessProbe:
+						    exec:
+							  command:
+							    - cat
+								- /tmp/healthy
+							initialDelaySeconds: 5
+							periodSeconds: 5
+							
+				kubectl create -f pod_nginx_exec.yaml
+				
+				vim pod_nginx_httpget.yaml
+					apiVersion: v1
+					kind: Pod
+					metadata:
+					  name: httpget
+					spec:
+					  containers:
+					    - name: nginx
+						  image: 172.16.98.27:5000/nginx:1.13
+						  ports:
+						    - containerPort: 80
+						  livenessProbe:
+						    httpGet:
+							  path: /index.html
+							  port: 80
+							initialDelaySeconds: 3
+							periodSeconds: 3
+				kubectl create -f pod_nginx_httpget.yaml
+				kubectl exec -it httpget bash
+				rm /usr/share/nginx/html/index.html
+				
+				vim pod_nginx_tcpSocket.yaml
+					apiVersion: v1
+					kind: Pod
+					metadata:
+					  name: tcpsocket
+					spec:
+					  containers:
+					    - name: nginx
+						  image: 172.16.98.27:5000/nginx:1.13
+						  ports:
+						    - containerPort: 80
+						  livenessProbe:
+						    tcpSocket:
+							  port: 80
+							initialDelaySeconds: 3
+							periodSeconds: 3
+							
+			readinessProbe:
+			master:
+				vim nginx_rc_readiness.yaml
+					apiVersion: v1
+					kind: ReplicationController
+					metadata:
+					  name: readiness
+					spec:
+					  replicas: 2
+					  selector:
+						app: readiness
+					  template:
+					    metadata:
+						  labels:
+						    app: readiness
+						spec:
+						  containers:
+							- name: readiness
+							  image: 172.16.98.27:5000/nginx:1.13
+							  ports:
+								- containerPort: 80
+							  readinessProbe:
+								httpGet:
+								  path: /index.html
+								  port: 80
+								initialDelaySeconds: 3
+								periodSeconds: 3
+			
+				kubectl create -f nginx_rc_readiness.yaml
+				kubectl expose rc readiness --port=80
+			
+		14. k8s 的 dashboard
+		
+		master :
+		
+			cd ~/k8s
+			wget https://www.qstack.com.cn/dashboard.zip
+			unzip dashboard.zip
+			cd dashboard
+			
+			docker pull docker.io/googlecontainer/kubernetes-dashboard-amd64:v1.4.1
+			docker tag docker.io/googlecontainer/kubernetes-dashboard-amd64:v1.4.1 <master IP>:5000/kubernetes-dashboard-amd64:v1.4.1
+			docker push <master IP>:5000/kubernetes-dashboard-amd64:v1.4.1
+			
+			kubectl create -f dashboard-deploy.yaml
+			kubectl create -f dashboard-svc.yaml
+			kubectl get all --namespace=kube-system
+			
+			<master IP>:8080	( apiserver )
+			訪問 <master IP>:8080/ui 會自動跳轉到 dashboard
+			
+		15. namespace
+		
+		master :
+		
+			kubectl create namespace test
+			kubectl delete namespace test	( 刪除 namespace 下所有資源 )
+			
+			kubectl get all --all-namespaces
+			
+			yaml 可以指定 namespace :
+				metadata:
+					namespace: <name>
+			補 : 不同 namespace 可以有相同名稱的 service，相同 namespace 不可以有相同名稱的 service
+		
+		16. proxy 訪問 k8s
+		
+		k8s 有兩種訪問服務的方式 : ClusterIP 和 NodePort
+		
+		ClusterIP 範例 :
+		
+			<master IP>:8080/api/v1/proxy/namespaces/kube-system/services/kubernetes-dashboard	( 替換網址中的名稱就可以訪問不同的服務 )
+			
+			
+			
+		17. k8s 的 heapster ( 資源監控 )
+		
+		master :
+		
+			cd ~/k8s
+			mkdir heapster
+			cd heapster
+			cd wget https://www.qstack.com.cn/heapster-influxdb.zip
+			unzip heapster-influxdb.zip
+			cd heapster-influxdb
+				( heapster-controller 的地址要修改 )
+			
+			kubectl create -f .
+			kubectl get svc --namespace=kube-system
+			kubectl get pod -n kube-system
+			
+			用瀏覽器訪問 dashboard 可以看結果
+			
+			vim /etc/kubernetes/kubelet
+				KUBELET_ARGS 加入 "--cadvisor-port=8080"
+			systemctl restart kubelet.service
+			
+			瀏覽器訪問 <nodeIP>:8080 可以顯示資源監控
+			
+		18. k8s 彈性伸縮
+		
+		Horizontal Pod Autoscaler 的操作對象是 Replication Controller、ReplicaSet 或 Deployment 對應的 Pod，根據 CPU 使用量進行增減 Pod 的數量
+		controller 目前使用 heapster 檢測 CPU 使用量
+		
+		yaml 加入以下程式碼 :
+		
+			spec:
+			  resource:
+			    limits:
+				  cpu: 100m
+				  memory:50Mi
+				requests:
+				  cpu: 100m
+				  memory: 50Mi
+				  
+		kubectl create -f .
+		kubectl autoscale replicationcontroller myweb --max=8 --min=1 --cpu-percent=10
+		
+		yum install httpd-tools -y
+		壓力測試 :
+		
+			ab -n 500000 -c 100 http://<node IP>/index.html
+			
+		
+		19. pc 和 pvc	( 持久化存儲 )
+		
+			persistentVolume (PV) : 一個全局資源，包含類型、大小、訪問模式。其生命週期獨立於 pod
+			persistentVolumeClaim (pvc) : 為 namespace 中的資源，描述對於 pv 的請求，請求訊息包含存儲大小、訪問模式等
+			
+			創建 PV & PVC :
+			
+				# 安裝 nfs
+				master、node1、node2 :
+					
+					yum install -y nfs-utils
+					
+				master :
+				
+					vim /etc/exports
+						/data/	<IP 172.0.0.0>/24(rw,async,no_root_squash,no_all_squash)
+					cd ~
+					mkdir /data/k8s -p
+					systemctl restart rpcbind
+					systemctl restart nfs
+					systemctl enable rpcbind
+					systemctl enable nfs
+				
+				node1、node2 :
+			
+					showmount -e <master IP>
+					
+				master :
+				
+					cd ~/k8s
+					mkdir volume
+					cd volume
+					vim test_pv.yaml
+						apiVersion: v1
+						kind: PersistentVolume
+						metadata:
+						  name: test
+						  labels:
+							type: test
+						spec:
+						  capacity:
+							storage: 2Gi
+						  accessModes:
+							- ReadWriteMany
+						  persistentVolumeReclaimPolicy: Recycle
+						  nfs:
+							path: "/data/k8s"
+							server: <master IP>
+							readOnly: false
+					kubectl create -f test_pv.yaml
+					kubectl get pv
+					
+					vim test_pvc.yaml
+						apiVersion: v1
+						kind: PersistentVolumeClaim
+						metadata:
+						  name: nfs
+						spec:
+						  accessModes:
+							- ReadWriteMany
+						  resources:
+							requests:
+							  storage: 1Gi
+					kubectl create -f test_pvc.yaml
+					kubectl get pvc
+					
+			tomcat + mysql :
+			
+				master :
+				
+					cd ~/k8s
+					cp -a tomcat_demo tomcat_demo_pv
+					cd tomcat_demo_pv
+					kubectl create -f mysql-rc.yml
+					kubectl create -f mysql-svc.yml
+					vim tomcat-rc.yml
+						env:
+						  - name: MYSQL_SERVICE_HOST
+							value: '< 改成 mysql cluster IP，如果有 DNS 組件就可以直接使用 'mysql' >'
+					kubectl create -f tomcat-rc.yml
+					kubectl create -f tomcat-svc.yml
+					
+					vim mysql-rc-pvc.yaml
+						apiVersion: v1
+						kind: ReplicationController
+						metadata:
+						  name: mysql
+						spec:
+						  replicas: 1
+						  selector:
+							app: mysql
+						  template:
+							metadata:
+							  labels:
+								app: mysql
+							spec:
+							  containers:
+								- name: mysql
+								  image: 172.16.98.27:5000/mysql:5.7
+								  ports:
+								  - containerPort: 3306
+								  env:
+								  - name: MYSQL_ROOT_PASSWORD
+									value: '123456'
+									volumeMounts:
+									- name: data
+									  mountPath: /var/lib/mysql
+							  volumes:
+							  - name: data
+							    persistentVolumeClaim:
+								  claimName: mysql
+					
+		20. 分布式文件系統 glusterfs
+		
+			master、node1、node2 :
+			
+				yum install centos-release-gluster -y
+				yum install glusterfs-server -y
+				systemctl start glusterd.service
+				systemctl enable glusterd.service
+				mkdir -p /gfs/test1
+				mkdir -p /gfs/test2
+					
+					
+			master :
+			
+				gluster pool list
+				gluster peer probe k8s-node1
+				gluster peer probe k8s-node2
+
+				gluster volume create test replica 2 k8s-master:/gfs/test1 k8s-master:/gfs/test2 k8s-node1:/gfs/test1 k8s-node1:/gfs/test2 force
+				gluster volume start test
+				gluster volume info test
+				mount -t glusterfs <master IP>:/test /mnt
+				df -h
+				
+				擴充容量 :
+					gluster volume add-brick test k8s-node2:/gfs/test1 k8s-node2:/gfs/test2 force
+				df -h
+					
+					
+		21. glusterfs + k8s
+					
+			master :
+			
+				cd ~/k8s
+				mkdir glusterfs-pvc
+				cd glusterfs-pvc
+				
+				# 創建 endpoint
+				vim glusterfs-ep.yaml
+					apiVersion: v1
+					kind: Endpoints
+					metadata:
+					  name: glusterfs
+					  namespace: default
+					subsets:
+					  - addresses:
+						- ip: <master IP>
+						- ip: <node1 IP>
+						- ip: <node2 IP>
+						ports:
+						  - port: 49152
+							protocol: TCP
+							
+				kubectl create -f glusterfs-ep.yaml
+				kubectl get ep
+				
+				# 創建 service
+				vim glusterfs-svc.yaml
+					apiVersion: v1
+					kind: Service
+					metadata:
+					  name: glusterfs
+					  namespace: default
+					spec:
+					  ports:
+					    - port: 49152
+						  protocol: TCP
+						  targetPort: 49152
+						sessionAffinity: None
+						type: ClusterIP
+							
+				kubectl create -f glusterfs-svc.yaml
+				kubectl get svc
+				kubectl describe svc glusterfs
+				
+				# 創建 pv
+				vim gluster-pv.yaml
+					apiVersion: v1
+					kind: PersistentVolume
+					metadata:
+					  name: gluster
+					  labels:
+					    type: glusterfs
+					spec:
+					  capacity:
+					    storage: 50Gi
+					  accessModes:
+					    - ReadWriteMany
+					  glusterfs:
+					    endpoints: "glusterfs"
+						path: "test"
+						readOnly: false
+						
+				kubectl create -f gluster-pv.yaml
+				kubectl get pv
+							
+				cp ../volume/test_pvc.yaml ./gluster_pvc.yaml
+				vim gluster_pvc.yaml
+					name: gluster
+				kubectl create -f gluster_pvc.yaml
+				
+				cp ../pod/nginx_pod.yaml .
+				vim nginx_pod.yaml
+					增加:
+					spec:
+					  containers:
+					    ports:
+						  hostPort: 80
+						volumeMounts:
+						  - name: nfs-vol2
+							mountPath: /usr/share/nginx/html
+				      volumes:
+					  - name: nfs-vol2
+						persistentVolumeClaim:
+					      claimName: gluster
+						  
+				kubectl create -f nginx_pod.yaml
+						  
+			
+		22. jenkins 自動化創建 docker 鏡像並部屬到 k8s 
+		
+			# 安裝 gitlab
+			
+			node2 :
+			
+				wget https://mirror.tuna.tsinghua.edu.cn/gitlab-ce/yum/el7/gitlab-ce-11.9.11-ce.0.el7.x86_64.rpm
+				yum localinstall -y gitlab-ce-11.9.11-ce.0.el7.x86_64.rpm
+				
+				vim /etc/gitlab/gitlab.rb
+					13: external_url 'http://<node2 IP>'
+					1535: prometheus_monitoring['enable'] = false
+				gitlab-ctl reconfigure
+				訪問 http://<node2 IP>
+				
+				# gitlab 創建倉庫並上傳 code
+				
+				yum install -y git
+				cd /opt
+				mkdir test
+				cd test
+				
+				上傳 :
+				
+					git config --global user.name "Administrator"
+					git config --global user.email admin@example.com
+					
+					git init
+					git remote add origin http://<node2 IP>/root/test.git
+					git add .
+					git commit -m "Initial commit"
+					git push -u origin master
+					
+			node1 :
+				
+				# 安裝 jenkins
+				
+				rpm -ivh jdk-8u102-linux-x64.rpm	( 安裝 jdk )
+				java -version
+				mkdir /app
+				tar xf apache-tomcat-8.0.27.tar.gz -C /app		( 安裝 tomcat )
+				ls /app
+				rm -rf /app/apache-tomcat-8.0.27/webapps/*
+				mv jenkins.war /app/apache-tomcat-8.0.27/webapps/ROOT.war
+				
+				/app/apache-tomcat-8.0.27/bin/startup.sh
+				netstat -lntup
+				訪問 <node1 IP>:8080
+				
+				
+				ssh-keygen -t rsa
+				cat /root/.ssh/id_rsa.pub 配置到 gitlab 上
+				jenkins 要新增 SSH Credentials ( cat /root/.ssh/id_rsa )
